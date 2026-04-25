@@ -6,6 +6,9 @@ const jwt = require("jsonwebtoken");
 const cloudinary = require("cloudinary").v2;
 const multer = require("multer");
 const path = require("path");
+const Doctor = require("../models/DoctorModel");
+
+const verifyMrToken = require("../middlewares/verifyMrToken");
 
 console.log('\n========== MEDICAL REPRESENTATIVE ROUTE INIT ==========');
 
@@ -527,7 +530,6 @@ router.post("/resend-otp", async (req, res) => {
 
 // MR Login Route
 router.post("/mr-login", async (req, res) => {
-  console.log('\n[MR] Login Request for:', req.body.mr_mobile_number);
   const { mr_mobile_number, mr_password } = req.body;
 
   if (!mr_mobile_number || !mr_password) {
@@ -554,14 +556,8 @@ router.post("/mr-login", async (req, res) => {
       });
     }
 
-    // Password comparison
-    let isPasswordValid = false;
-    
-    if (mr.mr_password === mr_password) {
-      isPasswordValid = true;
-    }
-
-    if (!isPasswordValid) {
+    // Plain password compare
+    if (mr.mr_password !== mr_password) {
       return res.status(401).json({
         success: false,
         message: "Invalid password. Please try again.",
@@ -574,40 +570,24 @@ router.post("/mr-login", async (req, res) => {
         mr_mobile_number: mr.mr_mobile_number,
         mr_email: mr.mr_email,
         mr_name: mr.mr_name,
+        mr_city: mr.mr_city,
         role: "medical_representative",
       },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
-    const mrData = {
-      id: mr._id,
-      mr_name: mr.mr_name,
-      mr_email: mr.mr_email,
-      mr_mobile_number: mr.mr_mobile_number,
-      mr_company_name: mr.mr_company_name,
-      mr_city: mr.mr_city,
-      mr_region: mr.mr_region,
-      mr_address: mr.mr_address,
-      experience_years: mr.experience_years,
-      is_mobile_verified: mr.is_mobile_verified,
-      certificate_url: mr.certificate_url,
-      profile_picture: mr.profile_picture,
-      createdAt: mr.createdAt,
-    };
-
     return res.status(200).json({
       success: true,
       message: "Login successful",
       token,
-      mr: mrData,
     });
   } catch (error) {
-    console.error("[MR] Login error:", error);
+    console.error("[MR LOGIN ERROR]", error);
+
     return res.status(500).json({
       success: false,
       message: "Server error occurred",
-      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 });
@@ -707,6 +687,60 @@ router.post("/upload-document/:id", upload.fields([
     });
   }
 });
+
+router.get("/getDoctorsByCity", verifyMrToken, async (req, res) => {
+  try {
+    const mrCity = req.mr.mr_city;
+
+    console.log("\n[GET DOCTORS BY CITY]");
+    console.log("MR City:", mrCity);
+
+    if (!mrCity) {
+      return res.status(400).json({
+        success: false,
+        message: "MR city not found in token",
+      });
+    }
+
+    const doctors = await Doctor.find(
+      {
+        dr_city: { $regex: new RegExp(`^${mrCity}$`, "i") },
+      },
+      {
+        _id: 0,
+        dr_name: 1,
+        dr_degree: 1,
+        dr_email: 1,
+        dr_mobile_number: 1,
+        dr_city: 1,
+        dr_address: 1,
+      }
+    ).lean();
+
+    const formattedDoctors = doctors.map((doc) => ({
+      name: doc.dr_name,
+      degree: doc.dr_degree,
+      email: doc.dr_email,
+      mobile: doc.dr_mobile_number,
+      city: doc.dr_city,
+      address: doc.dr_address,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      city: mrCity,
+      count: formattedDoctors.length,
+      doctors: formattedDoctors,
+    });
+  } catch (error) {
+    console.error("[GET DOCTORS BY CITY ERROR]", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch doctors",
+    });
+  }
+}); 
 
 console.log('✅ Medical Representative Routes Loaded Successfully');
 console.log('=====================================================\n');

@@ -5,7 +5,6 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
@@ -20,81 +19,17 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const { width, height } = Dimensions.get('window');
 const API_BASE_URL = 'http://localhost:8000/api';
 
-const STORAGE_KEYS = {
-  MR_TOKEN: 'mr_token',
-};
-
-const storeToken = async (token: string) => {
-  try {
-    await AsyncStorage.setItem(STORAGE_KEYS.MR_TOKEN, token);
-    return true;
-  } catch (error) {
-    console.error('Error storing token:', error);
-    return false;
-  }
-};
-
 export default function MRLogin() {
   const router = useRouter();
-  const [mobileNumber, setMobileNumber] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
   const passwordInputRef = useRef<TextInput>(null);
 
-  const handleLogin = async () => {
-    if (!mobileNumber || mobileNumber.length !== 10) {
-      Alert.alert('Error', 'Please enter a valid 10-digit mobile number');
-      return;
-    }
+  const [mobileNumber, setMobileNumber] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-    if (!password) {
-      Alert.alert('Error', 'Please enter your password');
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      const response = await axios.post(`${API_BASE_URL}/mr/mr-login`, {
-        mr_mobile_number: mobileNumber,
-        mr_password: password,
-      });
-
-      if (response.data.success) {
-        await storeToken(response.data.token);
-        
-        Alert.alert(
-          'Login Successful',
-          `Welcome back, ${response.data.mr.mr_name}!`,
-          [
-            {
-              text: 'OK',
-              onPress: () => {
-                router.replace('/mr-dashboard');
-              },
-            },
-          ]
-        );
-      } else {
-        Alert.alert('Login Failed', response.data.message || 'Invalid credentials');
-      }
-    } catch (error: any) {
-      if (error.response) {
-        Alert.alert('Login Failed', error.response.data?.message || 'Invalid credentials');
-      } else if (error.request) {
-        Alert.alert('Error', 'Cannot connect to server. Please check your connection.');
-      } else {
-        Alert.alert('Error', error.message || 'Something went wrong');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSignUpPress = () => {
-    router.push('/mr-register');
-  };
+  const [errorMsg, setErrorMsg] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
 
   const validateMobileNumber = (text: string) => {
     const cleaned = text.replace(/[^0-9]/g, '');
@@ -103,34 +38,121 @@ export default function MRLogin() {
     }
   };
 
+  const handleLogin = async () => {
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    if (mobileNumber.length !== 10) {
+      setErrorMsg('Please enter a valid 10-digit mobile number.');
+      return;
+    }
+
+    if (!password.trim()) {
+      setErrorMsg('Please enter your password.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      const response = await axios.post(`${API_BASE_URL}/mr/mr-login`, {
+        mr_mobile_number: mobileNumber,
+        mr_password: password,
+      });
+
+      if (response.data.success && response.data.token) {
+        await AsyncStorage.setItem('mr_token', response.data.token);
+
+        setSuccessMsg('Login successful! Redirecting...');
+
+        router.replace('/mr-dashboard');
+        return;
+      }
+
+      setErrorMsg(response.data.message || 'Login failed.');
+    } catch (error: any) {
+      if (error.response) {
+        setErrorMsg(
+          error.response.data?.message ||
+            'Invalid mobile number or password.'
+        );
+      } else if (error.request) {
+        setErrorMsg('Cannot connect to server. Please try again.');
+      } else {
+        setErrorMsg(error.message || 'Something went wrong.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <KeyboardAvoidingView
+      style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
-        
+    >
+      <ScrollView
+        contentContainerStyle={styles.scrollContainer}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* Background */}
         <View style={styles.backgroundDecoration}>
           <View style={styles.circle1} />
           <View style={styles.circle2} />
           <View style={styles.circle3} />
         </View>
 
+        {/* Header */}
         <View style={styles.headerSection}>
           <View style={styles.iconWrapper}>
-            <MaterialIcons name="business" size={60} color="#7C3AED" />
+            <MaterialIcons name="business" size={58} color="#7C3AED" />
           </View>
+
           <Text style={styles.title}>MR Login</Text>
-          <Text style={styles.subtitle}>Welcome back! Please login to your account</Text>
+          <Text style={styles.subtitle}>
+            Welcome back! Login to continue
+          </Text>
         </View>
 
+        {/* Card */}
         <View style={styles.formSection}>
+          {!!errorMsg && (
+            <View style={styles.errorBox}>
+              <MaterialIcons
+                name="error-outline"
+                size={18}
+                color="#DC2626"
+              />
+              <Text style={styles.errorText}>{errorMsg}</Text>
+            </View>
+          )}
+
+          {!!successMsg && (
+            <View style={styles.successBox}>
+              <MaterialIcons
+                name="check-circle-outline"
+                size={18}
+                color="#16A34A"
+              />
+              <Text style={styles.successText}>{successMsg}</Text>
+            </View>
+          )}
+
+          {/* Mobile */}
           <View style={styles.inputWrapper}>
             <Text style={styles.inputLabel}>Mobile Number</Text>
+
             <View style={styles.inputContainer}>
-              <MaterialIcons name="phone-android" size={22} color="#64748B" style={styles.inputIcon} />
+              <MaterialIcons
+                name="phone-android"
+                size={22}
+                color="#64748B"
+                style={styles.inputIcon}
+              />
+
               <TextInput
                 style={styles.input}
-                placeholder="Enter 10-digit mobile number"
+                placeholder="Enter mobile number"
                 placeholderTextColor="#94A3B8"
                 keyboardType="phone-pad"
                 maxLength={10}
@@ -138,19 +160,29 @@ export default function MRLogin() {
                 onChangeText={validateMobileNumber}
                 editable={!loading}
                 returnKeyType="next"
-                onSubmitEditing={() => passwordInputRef.current?.focus()}
+                onSubmitEditing={() =>
+                  passwordInputRef.current?.focus()
+                }
               />
             </View>
           </View>
 
+          {/* Password */}
           <View style={styles.inputWrapper}>
             <Text style={styles.inputLabel}>Password</Text>
+
             <View style={styles.inputContainer}>
-              <MaterialIcons name="lock" size={22} color="#64748B" style={styles.inputIcon} />
+              <MaterialIcons
+                name="lock"
+                size={22}
+                color="#64748B"
+                style={styles.inputIcon}
+              />
+
               <TextInput
                 ref={passwordInputRef}
                 style={styles.input}
-                placeholder="Enter your password"
+                placeholder="Enter password"
                 placeholderTextColor="#94A3B8"
                 secureTextEntry={!showPassword}
                 value={password}
@@ -159,36 +191,70 @@ export default function MRLogin() {
                 returnKeyType="done"
                 onSubmitEditing={handleLogin}
               />
+
               <TouchableOpacity
-                style={styles.eyeIcon}
-                onPress={() => setShowPassword(!showPassword)}>
-                <MaterialIcons name={showPassword ? 'visibility' : 'visibility-off'} size={22} color="#64748B" />
+                onPress={() => setShowPassword(!showPassword)}
+              >
+                <MaterialIcons
+                  name={
+                    showPassword
+                      ? 'visibility'
+                      : 'visibility-off'
+                  }
+                  size={22}
+                  color="#64748B"
+                />
               </TouchableOpacity>
             </View>
           </View>
 
+          {/* Login Button */}
           <TouchableOpacity
-            style={[styles.loginButton, loading && styles.loginButtonDisabled]}
+            style={[
+              styles.loginButton,
+              loading && styles.loginButtonDisabled,
+            ]}
             onPress={handleLogin}
-            disabled={loading}>
-            {loading ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Text style={styles.loginButtonText}>Login</Text>}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.loginButtonText}>Login</Text>
+            )}
           </TouchableOpacity>
 
+          {/* Divider */}
           <View style={styles.dividerContainer}>
             <View style={styles.divider} />
             <Text style={styles.dividerText}>OR</Text>
             <View style={styles.divider} />
           </View>
 
-          <TouchableOpacity style={styles.signupButton} onPress={handleSignUpPress}>
-            <MaterialIcons name="person-add" size={20} color="#7C3AED" />
-            <Text style={styles.signupButtonText}>Create New Account</Text>
+          {/* Register */}
+          <TouchableOpacity
+            style={styles.signupButton}
+            onPress={() => router.push('/mr-register')}
+          >
+            <MaterialIcons
+              name="person-add"
+              size={20}
+              color="#7C3AED"
+            />
+            <Text style={styles.signupButtonText}>
+              Create New Account
+            </Text>
           </TouchableOpacity>
         </View>
 
+        {/* Footer */}
         <View style={styles.footer}>
-          <Text style={styles.footerText}>Medical Representative Portal</Text>
-          <Text style={styles.footerSubtext}>Secure & Reliable Platform</Text>
+          <Text style={styles.footerText}>
+            Medical Representative Portal
+          </Text>
+          <Text style={styles.footerSubtext}>
+            Secure & Reliable Platform
+          </Text>
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -197,31 +263,213 @@ export default function MRLogin() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F8FAFC' },
-  scrollContainer: { flexGrow: 1, paddingBottom: 20 },
-  backgroundDecoration: { position: 'absolute', width: width, height: height, overflow: 'hidden' },
-  circle1: { position: 'absolute', width: width * 0.6, height: width * 0.6, borderRadius: width * 0.3, backgroundColor: '#EDE9FE', top: -width * 0.2, right: -width * 0.1, opacity: 0.6 },
-  circle2: { position: 'absolute', width: width * 0.4, height: width * 0.4, borderRadius: width * 0.2, backgroundColor: '#DDD6FE', bottom: -width * 0.1, left: -width * 0.15, opacity: 0.4 },
-  circle3: { position: 'absolute', width: width * 0.3, height: width * 0.3, borderRadius: width * 0.15, backgroundColor: '#C4B5FD', top: height * 0.3, right: -width * 0.1, opacity: 0.3 },
-  headerSection: { alignItems: 'center', paddingTop: Platform.OS === 'ios' ? 60 : 40, paddingBottom: 30, paddingHorizontal: 20 },
-  iconWrapper: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', marginBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 5 },
-  title: { fontSize: 32, fontWeight: 'bold', color: '#1E293B', marginBottom: 8 },
-  subtitle: { fontSize: 16, color: '#64748B', textAlign: 'center', lineHeight: 22 },
-  formSection: { backgroundColor: '#FFFFFF', borderRadius: 24, marginHorizontal: 20, padding: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 3 },
-  inputWrapper: { marginBottom: 20 },
-  inputLabel: { fontSize: 14, fontWeight: '500', color: '#1E293B', marginBottom: 8, marginLeft: 4 },
-  inputContainer: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 14, backgroundColor: '#F8FAFC', paddingHorizontal: 16, height: 56 },
-  inputIcon: { marginRight: 12 },
-  input: { flex: 1, fontSize: 16, color: '#1E293B', paddingVertical: Platform.OS === 'ios' ? 12 : 8 },
-  eyeIcon: { padding: 4 },
-  loginButton: { backgroundColor: '#7C3AED', borderRadius: 14, paddingVertical: 16, alignItems: 'center', shadowColor: '#7C3AED', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 },
-  loginButtonDisabled: { backgroundColor: '#94A3B8', shadowOpacity: 0 },
-  loginButtonText: { color: '#FFFFFF', fontSize: 18, fontWeight: '600' },
-  dividerContainer: { flexDirection: 'row', alignItems: 'center', marginVertical: 24 },
-  divider: { flex: 1, height: 1, backgroundColor: '#E2E8F0' },
-  dividerText: { marginHorizontal: 16, color: '#94A3B8', fontSize: 14 },
-  signupButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#F1F5F9', borderRadius: 14, paddingVertical: 16, borderWidth: 1, borderColor: '#E2E8F0' },
-  signupButtonText: { color: '#7C3AED', fontSize: 16, fontWeight: '600' },
-  footer: { alignItems: 'center', paddingVertical: 30, marginTop: 20 },
-  footerText: { fontSize: 14, color: '#94A3B8', fontWeight: '500' },
-  footerSubtext: { fontSize: 12, color: '#CBD5E1', marginTop: 4 },
+  scrollContainer: { flexGrow: 1, paddingBottom: 30 },
+
+  backgroundDecoration: {
+    position: 'absolute',
+    width,
+    height,
+    overflow: 'hidden',
+  },
+
+  circle1: {
+    position: 'absolute',
+    width: width * 0.6,
+    height: width * 0.6,
+    borderRadius: width * 0.3,
+    backgroundColor: '#EDE9FE',
+    top: -80,
+    right: -60,
+  },
+
+  circle2: {
+    position: 'absolute',
+    width: width * 0.4,
+    height: width * 0.4,
+    borderRadius: width * 0.2,
+    backgroundColor: '#DDD6FE',
+    bottom: -50,
+    left: -40,
+  },
+
+  circle3: {
+    position: 'absolute',
+    width: width * 0.3,
+    height: width * 0.3,
+    borderRadius: width * 0.15,
+    backgroundColor: '#C4B5FD',
+    top: height * 0.35,
+    right: -30,
+  },
+
+  headerSection: {
+    alignItems: 'center',
+    paddingTop: 60,
+    paddingBottom: 30,
+    paddingHorizontal: 20,
+  },
+
+  iconWrapper: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 18,
+    elevation: 4,
+  },
+
+  title: {
+    fontSize: 30,
+    fontWeight: 'bold',
+    color: '#1E293B',
+  },
+
+  subtitle: {
+    marginTop: 8,
+    fontSize: 15,
+    color: '#64748B',
+  },
+
+  formSection: {
+    backgroundColor: '#fff',
+    marginHorizontal: 20,
+    borderRadius: 24,
+    padding: 24,
+    elevation: 3,
+  },
+
+  errorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+    borderWidth: 1,
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 16,
+  },
+
+  errorText: {
+    color: '#DC2626',
+    marginLeft: 8,
+    flex: 1,
+    fontSize: 14,
+  },
+
+  successBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+    borderWidth: 1,
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 16,
+  },
+
+  successText: {
+    color: '#16A34A',
+    marginLeft: 8,
+    fontSize: 14,
+  },
+
+  inputWrapper: { marginBottom: 18 },
+
+  inputLabel: {
+    marginBottom: 8,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1E293B',
+  },
+
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    height: 56,
+  },
+
+  inputIcon: { marginRight: 10 },
+
+  input: {
+    flex: 1,
+    fontSize: 16,
+    color: '#1E293B',
+  },
+
+  loginButton: {
+    backgroundColor: '#7C3AED',
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+
+  loginButtonDisabled: {
+    backgroundColor: '#94A3B8',
+  },
+
+  loginButtonText: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+
+  dividerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 22,
+  },
+
+  divider: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E2E8F0',
+  },
+
+  dividerText: {
+    marginHorizontal: 12,
+    color: '#94A3B8',
+  },
+
+  signupButton: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 14,
+    paddingVertical: 16,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+
+  signupButtonText: {
+    color: '#7C3AED',
+    fontWeight: '700',
+    fontSize: 15,
+  },
+
+  footer: {
+    alignItems: 'center',
+    paddingTop: 24,
+  },
+
+  footerText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+
+  footerSubtext: {
+    color: '#CBD5E1',
+    fontSize: 12,
+    marginTop: 4,
+  },
 });

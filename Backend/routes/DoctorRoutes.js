@@ -488,4 +488,45 @@ router.post("/doctor-login", async (req, res) => {
 });
 
 
+
+router.get("/getAllDoctors", async (req, res) => {
+  try {
+    const doctors = await Doctor.find(
+      {},
+      {
+        _id: 0,
+        dr_name: 1,
+        dr_degree: 1,
+        dr_email: 1,
+        dr_mobile_number: 1,
+        dr_city: 1,
+        dr_address: 1,
+      }
+    ).lean();
+
+    const formattedDoctors = doctors.map((doc) => ({
+      name: doc.dr_name,
+      degree: doc.dr_degree,
+      email: doc.dr_email,
+      mobile: doc.dr_mobile_number,
+      city: doc.dr_city,
+      address: doc.dr_address,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      count: formattedDoctors.length,
+      doctors: formattedDoctors,
+    });
+  } catch (error) {
+    console.error("GET ALL DOCTORS ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch doctors",
+    });
+  }
+});
+
+
 module.exports = router;

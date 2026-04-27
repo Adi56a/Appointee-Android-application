@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, memo } from 'react';
 import {
   View,
   Text,
@@ -6,1052 +6,630 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
-  Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
   StatusBar,
+  Animated,
+  Dimensions,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import axios from 'axios';
 
-// For Android Emulator: http://10.0.2.2:8000/api
-// For iOS Simulator: http://localhost:8000/api
-// For Physical Device: http://YOUR_COMPUTER_IP:8000/api
+const { width } = Dimensions.get('window');
 const API_BASE_URL = 'http://localhost:8000/api';
 
-export default function DoctorRegistration() {
-  const [step, setStep] = useState(1);
-  const [mobileNumber, setMobileNumber] = useState('');
-  const [otpCode, setOtpCode] = useState('');
-  const [verificationId, setVerificationId] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [countdown, setCountdown] = useState(0);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+// ─── Types ────────────────────────────────────────────────────────────────────
+type ToastType = 'error' | 'success' | 'info';
+interface ToastMessage { id: number; type: ToastType; title: string; message: string; }
 
-  const [formData, setFormData] = useState({
-    dr_name: '',
-    dr_degree: '',
-    dr_email: '',
-    dr_city: '',
-    dr_address: '',
-    dr_password: '',
-    confirmPassword: '',
-  });
+// ─── Toast Item ───────────────────────────────────────────────────────────────
+const ToastItem = memo(({ toast, onDismiss }: { toast: ToastMessage; onDismiss: (id: number) => void }) => {
+  const opacity    = useRef(new Animated.Value(0)).current;
+  const translateY = useRef(new Animated.Value(-16)).current;
 
   useEffect(() => {
-    console.log('Component mounted');
-    return () => {
-      console.log('Component unmounted, cleaning up timer');
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
+    Animated.parallel([
+      Animated.spring(opacity,    { toValue: 1, useNativeDriver: true, speed: 20 }),
+      Animated.spring(translateY, { toValue: 0, useNativeDriver: true, speed: 20 }),
+    ]).start();
+    const t = setTimeout(() => {
+      Animated.parallel([
+        Animated.timing(opacity,    { toValue: 0, duration: 280, useNativeDriver: true }),
+        Animated.timing(translateY, { toValue: -16, duration: 280, useNativeDriver: true }),
+      ]).start(() => onDismiss(toast.id));
+    }, 4000);
+    return () => clearTimeout(t);
   }, []);
 
-  useEffect(() => {
-    console.log('Current step:', step);
-    console.log('Mobile Number:', mobileNumber);
-    console.log('Verification ID:', verificationId);
-    console.log('OTP Code:', otpCode);
-  }, [step, mobileNumber, verificationId, otpCode]);
+  const cfg = {
+    error:   { bg: '#FEF2F2', border: '#FCA5A5', icon: '#DC2626', name: 'error-outline'        as const },
+    success: { bg: '#F0FDF4', border: '#86EFAC', icon: '#16A34A', name: 'check-circle-outline' as const },
+    info:    { bg: '#EFF6FF', border: '#93C5FD', icon: '#2563EB', name: 'info-outline'          as const },
+  }[toast.type];
 
-  const startCountdown = (seconds: number) => {
-    console.log(`Starting countdown for ${seconds} seconds`);
-    setCountdown(seconds);
-    if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          console.log('Countdown finished');
-          if (timerRef.current) clearInterval(timerRef.current);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  };
+  return (
+    <Animated.View style={[tS.wrap, { backgroundColor: cfg.bg, borderColor: cfg.border, opacity, transform: [{ translateY }] }]}>
+      <View style={[tS.iconBox, { backgroundColor: cfg.border + '66' }]}>
+        <MaterialIcons name={cfg.name} size={19} color={cfg.icon} />
+      </View>
+      <View style={tS.texts}>
+        <Text style={[tS.title, { color: cfg.icon }]}>{toast.title}</Text>
+        {!!toast.message && <Text style={tS.msg}>{toast.message}</Text>}
+      </View>
+      <TouchableOpacity onPress={() => onDismiss(toast.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+        <MaterialIcons name="close" size={15} color="#94A3B8" />
+      </TouchableOpacity>
+    </Animated.View>
+  );
+});
 
-  const handleSendOTP = async () => {
-    console.log('=== SEND OTP FUNCTION CALLED ===');
-    console.log('Mobile number entered:', mobileNumber);
+const tS = StyleSheet.create({
+  wrap:    { flexDirection: 'row', alignItems: 'flex-start', borderWidth: 1, borderRadius: 14, padding: 12, marginBottom: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.07, shadowRadius: 10, elevation: 4 },
+  iconBox: { width: 34, height: 34, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
+  texts:   { flex: 1 },
+  title:   { fontSize: 13, fontWeight: '700', marginBottom: 1 },
+  msg:     { fontSize: 12, color: '#475569', lineHeight: 16 },
+});
 
-    if (!mobileNumber || mobileNumber.length !== 10) {
-      console.log('Validation failed: Invalid mobile number');
-      Alert.alert('Error', 'Please enter a valid 10-digit mobile number');
-      return;
-    }
+// ─── 4-Digit OTP Input ────────────────────────────────────────────────────────
+const OTPInput = memo(({ value, onChange, hasError = false }: {
+  value: string; onChange: (v: string) => void; hasError?: boolean;
+}) => {
+  const inputRef = useRef<TextInput>(null);
+  const OTP_LEN  = 4;
+  const digits   = Array.from({ length: OTP_LEN }, (_, i) => value[i] || '');
+  const BOX_W    = (width - 80) / OTP_LEN;
 
-    setLoading(true);
-    const requestBody = { mobileNumber: mobileNumber };
-    console.log('Sending request to:', `${API_BASE_URL}/doctors/send-otp`);
-    console.log('Request body:', requestBody);
-
-    try {
-      const response = await axios.post(`${API_BASE_URL}/doctors/send-otp`, requestBody);
-      console.log('Response received:', response.data);
-      console.log('Response status:', response.status);
-
-      if (response.data.success) {
-        console.log('OTP sent successfully, verificationId:', response.data.verificationId);
-        setVerificationId(response.data.verificationId);
-        setStep(2);
-        startCountdown(60);
-        Alert.alert('Success', 'OTP sent successfully!');
-      } else {
-        console.log('API returned success false:', response.data.message);
-        Alert.alert('Error', response.data.message || 'Failed to send OTP');
-      }
-    } catch (error: any) {
-      console.error('=== SEND OTP ERROR ===');
-      console.error('Error object:', error);
-      if (error.response) {
-        console.error('Error response data:', error.response.data);
-        console.error('Error response status:', error.response.status);
-        Alert.alert('Error', error.response.data?.message || 'Failed to send OTP');
-      } else if (error.request) {
-        console.error('No response received from server');
-        Alert.alert('Error', 'Cannot connect to server. Please check your connection.');
-      } else {
-        console.error('Error message:', error.message);
-        Alert.alert('Error', error.message || 'Failed to send OTP');
-      }
-    } finally {
-      setLoading(false);
-      console.log('Send OTP function completed');
-    }
-  };
-
-  const handleVerifyOTP = async () => {
-    console.log('=== VERIFY OTP FUNCTION CALLED ===');
-    console.log('Mobile Number:', mobileNumber);
-    console.log('OTP Code:', otpCode);
-    console.log('Verification ID:', verificationId);
-
-    if (!otpCode || otpCode.length !== 4) {
-      console.log('Validation failed: Invalid OTP format');
-      Alert.alert('Error', 'Please enter the 6-digit OTP');
-      return;
-    }
-
-    if (!verificationId) {
-      console.log('Validation failed: No verification ID found');
-      Alert.alert('Error', 'Please request OTP first');
-      return;
-    }
-
-    setLoading(true);
-    const requestBody = {
-      mobileNumber: mobileNumber,
-      otpCode: otpCode,
-      verificationId: verificationId,
-    };
-    console.log('Sending request to:', `${API_BASE_URL}/doctors/verify-otp`);
-    console.log('Request body:', requestBody);
-
-    try {
-      const response = await axios.post(`${API_BASE_URL}/doctors/verify-otp`, requestBody);
-      console.log('Response received:', response.data);
-      console.log('Response status:', response.status);
-
-      if (response.data.success) {
-        console.log('OTP verified successfully!');
-        console.log('Mobile number verified:', response.data.mobileNumber);
-        console.log('Verification status:', response.data.verificationStatus);
-        setStep(3);
-        Alert.alert('Success', 'Mobile number verified successfully!');
-      } else {
-        console.log('API returned success false:', response.data.message);
-        Alert.alert('Error', response.data.message || 'Invalid OTP');
-      }
-    } catch (error: any) {
-      console.error('=== VERIFY OTP ERROR ===');
-      console.error('Error object:', error);
-      if (error.response) {
-        console.error('Error response data:', error.response.data);
-        console.error('Error response status:', error.response.status);
-        Alert.alert('Error', error.response.data?.message || 'Invalid OTP');
-      } else if (error.request) {
-        console.error('No response received from server');
-        Alert.alert('Error', 'Cannot connect to server. Please check your connection.');
-      } else {
-        console.error('Error message:', error.message);
-        Alert.alert('Error', error.message || 'Invalid OTP');
-      }
-    } finally {
-      setLoading(false);
-      console.log('Verify OTP function completed');
-    }
-  };
-
-  const handleResendOTP = async () => {
-    console.log('=== RESEND OTP FUNCTION CALLED ===');
-    console.log('Mobile Number:', mobileNumber);
-    console.log('Countdown remaining:', countdown);
-
-    if (countdown > 0) {
-      console.log('Resend blocked: Countdown active');
-      Alert.alert('Please wait', `Wait ${countdown} seconds before resending`);
-      return;
-    }
-
-    setLoading(true);
-    const requestBody = { mobileNumber: mobileNumber };
-    console.log('Sending request to:', `${API_BASE_URL}/doctors/resend-otp`);
-    console.log('Request body:', requestBody);
-
-    try {
-      const response = await axios.post(`${API_BASE_URL}/doctors/resend-otp`, requestBody);
-      console.log('Response received:', response.data);
-      console.log('Response status:', response.status);
-
-      if (response.data.success) {
-        console.log('OTP resent successfully, new verificationId:', response.data.verificationId);
-        setVerificationId(response.data.verificationId);
-        startCountdown(60);
-        Alert.alert('Success', 'OTP resent successfully!');
-      } else {
-        console.log('API returned success false:', response.data.message);
-        Alert.alert('Error', response.data.message || 'Failed to resend OTP');
-      }
-    } catch (error: any) {
-      console.error('=== RESEND OTP ERROR ===');
-      console.error('Error object:', error);
-      if (error.response) {
-        console.error('Error response data:', error.response.data);
-        console.error('Error response status:', error.response.status);
-        Alert.alert('Error', error.response.data?.message || 'Failed to resend OTP');
-      } else if (error.request) {
-        console.error('No response received from server');
-        Alert.alert('Error', 'Cannot connect to server. Please check your connection.');
-      } else {
-        console.error('Error message:', error.message);
-        Alert.alert('Error', error.message || 'Failed to resend OTP');
-      }
-    } finally {
-      setLoading(false);
-      console.log('Resend OTP function completed');
-    }
-  };
-
-  const handleRegister = async () => {
-    console.log('=== REGISTER FUNCTION CALLED ===');
-    console.log('Form Data:', formData);
-    console.log('Mobile Number:', mobileNumber);
-
-    if (!formData.dr_name.trim()) {
-      console.log('Validation failed: Name is empty');
-      Alert.alert('Error', 'Please enter your full name');
-      return;
-    }
-    if (!formData.dr_degree.trim()) {
-      console.log('Validation failed: Degree is empty');
-      Alert.alert('Error', 'Please enter your degree');
-      return;
-    }
-    if (!formData.dr_email.trim()) {
-      console.log('Validation failed: Email is empty');
-      Alert.alert('Error', 'Please enter your email');
-      return;
-    }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(formData.dr_email)) {
-      console.log('Validation failed: Invalid email format');
-      Alert.alert('Error', 'Please enter a valid email address');
-      return;
-    }
-    if (!formData.dr_city.trim()) {
-      console.log('Validation failed: City is empty');
-      Alert.alert('Error', 'Please enter your city');
-      return;
-    }
-    if (!formData.dr_address.trim()) {
-      console.log('Validation failed: Address is empty');
-      Alert.alert('Error', 'Please enter your address');
-      return;
-    }
-    if (!formData.dr_password) {
-      console.log('Validation failed: Password is empty');
-      Alert.alert('Error', 'Please enter a password');
-      return;
-    }
-    if (formData.dr_password.length < 6) {
-      console.log('Validation failed: Password too short');
-      Alert.alert('Error', 'Password must be at least 6 characters');
-      return;
-    }
-    if (formData.dr_password !== formData.confirmPassword) {
-      console.log('Validation failed: Passwords do not match');
-      Alert.alert('Error', 'Passwords do not match');
-      return;
-    }
-
-    setLoading(true);
-    const requestBody = {
-      dr_name: formData.dr_name,
-      dr_degree: formData.dr_degree,
-      dr_email: formData.dr_email,
-      dr_mobile_number: mobileNumber,
-      dr_city: formData.dr_city,
-      dr_address: formData.dr_address,
-      dr_password: formData.dr_password,
-    };
-    console.log('Sending request to:', `${API_BASE_URL}/doctors/register`);
-    console.log('Request body:', requestBody);
-
-    try {
-      const response = await axios.post(`${API_BASE_URL}/doctors/register`, requestBody);
-      console.log('Response received:', response.data);
-      console.log('Response status:', response.status);
-
-      if (response.data.success) {
-        console.log('Registration successful!');
-        console.log('Doctor data:', response.data.doctor);
-        Alert.alert(
-          'Registration Successful',
-          'Your doctor account has been created successfully!',
-          [
-            {
-              text: 'OK',
-              onPress: () => {
-                console.log('Resetting form after successful registration');
-                setStep(1);
-                setMobileNumber('');
-                setOtpCode('');
-                setVerificationId('');
-                setFormData({
-                  dr_name: '',
-                  dr_degree: '',
-                  dr_email: '',
-                  dr_city: '',
-                  dr_address: '',
-                  dr_password: '',
-                  confirmPassword: '',
-                });
-                if (timerRef.current) clearInterval(timerRef.current);
-                setCountdown(0);
-              },
-            },
-          ]
+  return (
+    <TouchableOpacity activeOpacity={1} onPress={() => inputRef.current?.focus()} style={oS.wrapper}>
+      <TextInput
+        ref={inputRef}
+        value={value}
+        onChangeText={(t) => onChange(t.replace(/[^0-9]/g, '').slice(0, OTP_LEN))}
+        keyboardType="number-pad"
+        maxLength={OTP_LEN}
+        style={oS.hidden}
+        caretHidden
+        autoFocus
+      />
+      {digits.map((d, i) => {
+        const isActive = value.length === i || (value.length === OTP_LEN && i === OTP_LEN - 1);
+        const isFilled = !!d;
+        return (
+          <View
+            key={i}
+            style={[
+              oS.box,
+              { width: BOX_W - 10, height: BOX_W - 4 },
+              isFilled && oS.boxFilled,
+              isActive && oS.boxActive,
+              hasError && oS.boxError,
+            ]}>
+            {isFilled
+              ? <Text style={oS.digit}>{d}</Text>
+              : isActive ? <View style={oS.cursor} /> : null}
+          </View>
         );
-      } else {
-        console.log('API returned success false:', response.data.message);
-        Alert.alert('Registration Failed', response.data.message || 'Something went wrong');
-      }
-    } catch (error: any) {
-      console.error('=== REGISTER ERROR ===');
-      console.error('Error object:', error);
-      if (error.response) {
-        console.error('Error response data:', error.response.data);
-        console.error('Error response status:', error.response.status);
-        Alert.alert('Registration Failed', error.response.data?.message || 'Something went wrong');
-      } else if (error.request) {
-        console.error('No response received from server');
-        Alert.alert('Error', 'Cannot connect to server. Please check your connection.');
-      } else {
-        console.error('Error message:', error.message);
-        Alert.alert('Registration Failed', error.message || 'Something went wrong');
-      }
-    } finally {
-      setLoading(false);
-      console.log('Register function completed');
-      
-    }
-  };
+      })}
+    </TouchableOpacity>
+  );
+});
 
-  const renderField = ({
-    label,
-    icon,
-    placeholder,
-    value,
-    onChangeText,
-    keyboardType = 'default',
-    maxLength,
-    secureTextEntry = false,
-    autoCapitalize = 'sentences',
-    multiline = false,
-    numberOfLines = 1,
-  }: {
-    label: string;
-    icon: keyof typeof MaterialIcons.glyphMap;
-    placeholder: string;
-    value: string;
-    onChangeText: (text: string) => void;
-    keyboardType?: 'default' | 'email-address' | 'phone-pad' | 'number-pad';
-    maxLength?: number;
-    secureTextEntry?: boolean;
-    autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
-    multiline?: boolean;
-    numberOfLines?: number;
-  }) => (
-    <View style={styles.fieldGroup}>
-      <Text style={styles.fieldLabel}>{label}</Text>
-      <View style={[styles.inputShell, multiline && styles.inputShellTextArea]}>
-        <View style={styles.iconWrap}>
-          <MaterialIcons name={icon} size={18} color="#2563EB" />
+const oS = StyleSheet.create({
+  wrapper: { flexDirection: 'row', justifyContent: 'center', gap: 12, marginVertical: 10 },
+  hidden:  { position: 'absolute', width: 1, height: 1, opacity: 0 },
+  box:     { borderRadius: 16, borderWidth: 2, borderColor: '#E2E8F0', backgroundColor: '#F8FAFC', alignItems: 'center', justifyContent: 'center' },
+  boxFilled: { backgroundColor: '#EEF4FF', borderColor: '#93C5FD' },
+  boxActive: { borderColor: '#2563EB', backgroundColor: '#FFFFFF', shadowColor: '#2563EB', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.22, shadowRadius: 10, elevation: 5 },
+  boxError:  { borderColor: '#F87171', backgroundColor: '#FEF2F2' },
+  digit:   { fontSize: 26, fontWeight: '800', color: '#0F172A' },
+  cursor:  { width: 2, height: 26, backgroundColor: '#2563EB', borderRadius: 1 },
+});
+
+// ─── Field Error ──────────────────────────────────────────────────────────────
+const FieldError = ({ message }: { message?: string }) =>
+  message ? (
+    <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 5, paddingLeft: 4, gap: 4 }}>
+      <MaterialIcons name="error-outline" size={12} color="#DC2626" />
+      <Text style={{ fontSize: 12, color: '#DC2626', fontWeight: '600' }}>{message}</Text>
+    </View>
+  ) : null;
+
+// ─── Slim Step Bar ────────────────────────────────────────────────────────────
+const StepBar = memo(({ step }: { step: number }) => {
+  const labels = ['Contact', 'Verify', 'Profile'];
+  return (
+    <View style={sbS.wrap}>
+      {labels.map((label, i) => {
+        const n = i + 1;
+        const done   = step > n;
+        const active = step === n;
+        return (
+          <View key={label} style={sbS.item}>
+            <View style={[sbS.line, done && sbS.lineDone, active && sbS.lineActive]} />
+            <Text style={[sbS.label, active && sbS.labelActive, done && sbS.labelDone]}>
+              {done ? '✓ ' : ''}{label}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+});
+
+const sbS = StyleSheet.create({
+  wrap:        { flexDirection: 'row', gap: 8, marginTop: 10 },
+  item:        { flex: 1, alignItems: 'center' },
+  line:        { width: '100%', height: 3, borderRadius: 99, backgroundColor: '#E2E8F0', marginBottom: 5 },
+  lineActive:  { backgroundColor: '#2563EB' },
+  lineDone:    { backgroundColor: '#16A34A' },
+  label:       { fontSize: 10, fontWeight: '600', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: 0.4 },
+  labelActive: { color: '#2563EB' },
+  labelDone:   { color: '#16A34A' },
+});
+
+// ─── FormField — HOISTED TO MODULE LEVEL so it is NEVER recreated on re-render ──
+// This is the critical fix: defining Field inside the parent component causes React
+// to treat it as a new component type on every render → unmount → TextInput loses focus.
+interface FieldProps {
+  label: string;
+  icon: keyof typeof MaterialIcons.glyphMap;
+  placeholder: string;
+  value: string;
+  onChangeText: (t: string) => void;
+  keyboardType?: 'default' | 'email-address' | 'phone-pad' | 'number-pad';
+  maxLength?: number;
+  secureTextEntry?: boolean;
+  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+  multiline?: boolean;
+  numberOfLines?: number;
+  errorKey?: string;
+  // passed from parent so Field can read/clear errors without being defined inside parent
+  fieldErrors: Record<string, string>;
+  onClearError?: (key: string) => void;
+  editable?: boolean;
+}
+
+const FormField = memo(({
+  label, icon, placeholder, value, onChangeText,
+  keyboardType = 'default', maxLength, secureTextEntry = false,
+  autoCapitalize = 'sentences', multiline = false, numberOfLines = 1,
+  errorKey, fieldErrors, onClearError, editable = true,
+}: FieldProps) => {
+  const hasErr = errorKey ? !!fieldErrors[errorKey] : false;
+  return (
+    <View style={s.fieldGroup}>
+      <Text style={s.fieldLabel}>{label}</Text>
+      <View style={[s.inputShell, multiline && s.inputShellMulti, hasErr && s.inputShellErr]}>
+        <View style={[s.iconBox, hasErr && s.iconBoxErr]}>
+          <MaterialIcons name={icon} size={17} color={hasErr ? '#DC2626' : '#2563EB'} />
         </View>
         <TextInput
-          style={[styles.input, multiline && styles.textArea]}
+          style={[s.input, multiline && s.textArea]}
           placeholder={placeholder}
           placeholderTextColor="#94A3B8"
           value={value}
-          onChangeText={onChangeText}
+          onChangeText={t => {
+            onChangeText(t);
+            if (errorKey && fieldErrors[errorKey] && onClearError) onClearError(errorKey);
+          }}
           keyboardType={keyboardType}
           maxLength={maxLength}
           secureTextEntry={secureTextEntry}
           autoCapitalize={autoCapitalize}
           multiline={multiline}
           numberOfLines={numberOfLines}
-          editable={!loading}
+          editable={editable}
+          // Keep focus when user taps — do NOT dismiss on submit for non-last fields
+          blurOnSubmit={false}
         />
       </View>
+      {errorKey && <FieldError message={fieldErrors[errorKey]} />}
     </View>
   );
+});
 
-  const renderProgress = () => (
-    <View style={styles.progressCard}>
-      <View style={styles.progressTopRow}>
-        <Text style={styles.progressTitle}>Account Setup</Text>
-        <Text style={styles.progressCount}>Step {step}/3</Text>
-      </View>
+// ─── Main Component ───────────────────────────────────────────────────────────
+export default function DoctorRegistration() {
+  const router = useRouter();
+  const [step, setStep]                     = useState(1);
+  const [mobileNumber, setMobileNumber]     = useState('');
+  const [otpCode, setOtpCode]               = useState('');
+  const [verificationId, setVerificationId] = useState('');
+  const [loading, setLoading]               = useState(false);
+  const [countdown, setCountdown]           = useState(0);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const [toasts, setToasts]                 = useState<ToastMessage[]>([]);
+  const toastId  = useRef(0);
+  const fadeAnim = useRef(new Animated.Value(1)).current;
 
-      <View style={styles.progressRow}>
-        {[1, 2, 3].map((item, index) => (
-          <React.Fragment key={item}>
-            <View style={[styles.stepCircle, step >= item && styles.stepCircleActive]}>
-              {step > item ? (
-                <MaterialIcons name="check" size={16} color="#FFFFFF" />
-              ) : (
-                <Text style={[styles.stepNumber, step >= item && styles.stepNumberActive]}>
-                  {item}
-                </Text>
-              )}
-            </View>
-            {index < 2 && (
-              <View style={[styles.stepLine, step > item && styles.stepLineActive]} />
-            )}
-          </React.Fragment>
-        ))}
-      </View>
+  const [mobileError, setMobileError] = useState('');
+  const [otpError,    setOtpError]    = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-      <View style={styles.progressLabels}>
-        <Text style={[styles.progressLabel, step >= 1 && styles.progressLabelActive]}>
-          Contact
-        </Text>
-        <Text style={[styles.progressLabel, step >= 2 && styles.progressLabelActive]}>
-          Verify
-        </Text>
-        <Text style={[styles.progressLabel, step >= 3 && styles.progressLabelActive]}>
-          Profile
-        </Text>
-      </View>
-    </View>
-  );
+  const [formData, setFormData] = useState({
+    dr_name: '', dr_degree: '', dr_email: '',
+    dr_city: '', dr_address: '', dr_password: '', confirmPassword: '',
+  });
 
-  const renderHeader = () => (
-    <View style={styles.header}>
-      <View style={styles.topBadge}>
-        <MaterialIcons name="verified-user" size={14} color="#1D4ED8" />
-        <Text style={styles.topBadgeText}>Secure onboarding</Text>
-      </View>
+  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
-      <Text style={styles.headerTitle}>Welcome</Text>
-      <Text style={styles.headerSubtitle}>
-        Create your account with a clean and seamless mobile experience
-      </Text>
+  // ── Helpers ────────────────────────────────────────────────────────────────────
+  const showToast = (type: ToastType, title: string, message = '') => {
+    const id = ++toastId.current;
+    setToasts(p => [...p, { id, type, title, message }]);
+  };
+  const dismissToast = (id: number) => setToasts(p => p.filter(t => t.id !== id));
 
-      {renderProgress()}
-    </View>
-  );
+  const clearFieldError = (key: string) =>
+    setFieldErrors(p => { const n = { ...p }; delete n[key]; return n; });
 
+  const animStep = (cb: () => void) => {
+    Animated.timing(fadeAnim, { toValue: 0, duration: 160, useNativeDriver: true }).start(() => {
+      cb();
+      Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+    });
+  };
+
+  const startCountdown = (seconds: number) => {
+    setCountdown(seconds);
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      setCountdown(p => {
+        if (p <= 1) { if (timerRef.current) clearInterval(timerRef.current); return 0; }
+        return p - 1;
+      });
+    }, 1000);
+  };
+
+  // ── API Handlers ───────────────────────────────────────────────────────────────
+  const handleSendOTP = async () => {
+    setMobileError('');
+    if (!mobileNumber || mobileNumber.length !== 10) {
+      setMobileError('Enter a valid 10-digit mobile number');
+      showToast('error', 'Invalid Number', 'Mobile number must be exactly 10 digits.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await axios.post(`${API_BASE_URL}/doctors/send-otp`, { mobileNumber });
+      if (res.data.success) {
+        setVerificationId(res.data.verificationId);
+        animStep(() => setStep(2));
+        startCountdown(60);
+        showToast('success', 'OTP Sent!', `4-digit code sent to +91 ${mobileNumber}`);
+      } else {
+        showToast('error', 'Failed to Send OTP', res.data.message || 'Please try again.');
+      }
+    } catch (e: any) {
+      showToast('error', e.response ? 'Error' : 'Connection Error',
+        e.response?.data?.message || 'Cannot reach server. Check your connection.');
+    } finally { setLoading(false); }
+  };
+
+  const handleVerifyOTP = async () => {
+    setOtpError('');
+    if (!otpCode || otpCode.length !== 4) {
+      setOtpError('Please enter the complete 4-digit OTP');
+      showToast('error', 'Incomplete OTP', 'Enter all 4 digits.');
+      return;
+    }
+    if (!verificationId) { showToast('error', 'Session Expired', 'Request a new OTP.'); return; }
+    setLoading(true);
+    try {
+      const res = await axios.post(`${API_BASE_URL}/doctors/verify-otp`, { mobileNumber, otpCode, verificationId });
+      if (res.data.success) {
+        animStep(() => setStep(3));
+        showToast('success', 'Verified!', 'Mobile number confirmed.');
+      } else {
+        setOtpError(res.data.message || 'The OTP entered is incorrect.');
+        showToast('error', 'Verification Failed', res.data.message || 'Incorrect or expired OTP.');
+      }
+    } catch (e: any) {
+      const msg = e.response?.data?.message || 'Invalid OTP.';
+      setOtpError(msg);
+      showToast('error', 'Invalid OTP', msg);
+    } finally { setLoading(false); }
+  };
+
+  const handleResendOTP = async () => {
+    if (countdown > 0) { showToast('info', 'Please Wait', `Resend available in ${countdown}s.`); return; }
+    setLoading(true); setOtpCode(''); setOtpError('');
+    try {
+      const res = await axios.post(`${API_BASE_URL}/doctors/resend-otp`, { mobileNumber });
+      if (res.data.success) {
+        setVerificationId(res.data.verificationId);
+        startCountdown(60);
+        showToast('success', 'OTP Resent', 'New 4-digit code sent to your number.');
+      } else { showToast('error', 'Resend Failed', res.data.message || 'Could not resend OTP.'); }
+    } catch (e: any) {
+      showToast('error', e.response ? 'Error' : 'Connection Error', e.response?.data?.message || 'Failed to resend.');
+    } finally { setLoading(false); }
+  };
+
+  const handleRegister = async () => {
+    const errs: Record<string, string> = {};
+    const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!formData.dr_name.trim())    errs.dr_name         = 'Full name is required';
+    if (!formData.dr_degree.trim())  errs.dr_degree       = 'Medical degree is required';
+    if (!formData.dr_email.trim())   errs.dr_email        = 'Email address is required';
+    else if (!emailRe.test(formData.dr_email)) errs.dr_email = 'Enter a valid email address';
+    if (!formData.dr_city.trim())    errs.dr_city         = 'City is required';
+    if (!formData.dr_address.trim()) errs.dr_address      = 'Address is required';
+    if (!formData.dr_password)       errs.dr_password     = 'Password is required';
+    else if (formData.dr_password.length < 6) errs.dr_password = 'Minimum 6 characters';
+    if (!formData.confirmPassword)   errs.confirmPassword = 'Please confirm your password';
+    else if (formData.dr_password !== formData.confirmPassword) errs.confirmPassword = 'Passwords do not match';
+
+    setFieldErrors(errs);
+    if (Object.keys(errs).length > 0) { showToast('error', 'Incomplete Form', Object.values(errs)[0]); return; }
+
+    setLoading(true);
+    try {
+      const res = await axios.post(`${API_BASE_URL}/doctors/register`, {
+        dr_name: formData.dr_name, dr_degree: formData.dr_degree, dr_email: formData.dr_email,
+        dr_mobile_number: mobileNumber, dr_city: formData.dr_city,
+        dr_address: formData.dr_address, dr_password: formData.dr_password,
+      });
+      if (res.data.success) {
+        showToast('success', 'Registration Successful!', 'Your account has been created.');
+        setTimeout(() => router.replace('/doctor-login'), 1500);
+      } else {
+        const msg = res.data.message || 'Registration failed. Please try again.';
+        showToast('error', 'Registration Failed', msg);
+        if (res.data.field) setFieldErrors(p => ({ ...p, [res.data.field]: msg }));
+      }
+    } catch (e: any) {
+      const msg = e.response?.data?.message || 'Something went wrong.';
+      showToast('error', 'Registration Failed', msg);
+      if (msg.toLowerCase().includes('email')) setFieldErrors(p => ({ ...p, dr_email: msg }));
+    } finally { setLoading(false); }
+  };
+
+  // ── Shared props shorthand for FormField ──────────────────────────────────────
+  // Pass fieldErrors + clearFieldError + editable as a bundle so every FormField
+  // gets them without repetition.
+  const fp = { fieldErrors, onClearError: clearFieldError, editable: !loading };
+
+  // ── Step 1 ─────────────────────────────────────────────────────────────────────
   const renderStep1 = () => (
-    <ScrollView
-      style={styles.flex}
-      contentContainerStyle={styles.scrollContainer}
-      showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
-      bounces>
-      <View style={styles.mainCard}>
-        <View style={styles.heroIcon}>
-          <MaterialIcons name="smartphone" size={34} color="#2563EB" />
-        </View>
-
-        <Text style={styles.title}>Get Started</Text>
-        <Text style={styles.subtitle}>
-          Enter your mobile number to receive a secure verification code
-        </Text>
-
-        <View style={styles.infoCard}>
-          <MaterialIcons name="security" size={18} color="#2563EB" />
-          <Text style={styles.infoText}>
-            Fast, secure and built for smooth onboarding on every device
-          </Text>
-        </View>
-
-        {renderField({
-          label: 'Mobile Number',
-          icon: 'phone',
-          placeholder: 'Enter 10-digit mobile number',
-          value: mobileNumber,
-          onChangeText: (text) => {
-            console.log('Mobile number input changed:', text);
-            setMobileNumber(text);
-          },
-          keyboardType: 'phone-pad',
-          maxLength: 10,
-          autoCapitalize: 'none',
-        })}
-
-        <TouchableOpacity
-          style={[styles.primaryButton, loading && styles.buttonDisabled]}
-          onPress={handleSendOTP}
-          disabled={loading}>
-          {loading ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <>
-              <Text style={styles.primaryButtonText}>Send OTP</Text>
-              <MaterialIcons name="arrow-forward" size={18} color="#FFFFFF" />
-            </>
-          )}
-        </TouchableOpacity>
+    <View style={s.card}>
+      <View style={s.heroWrap}>
+        <View style={s.heroIcon}><MaterialIcons name="smartphone" size={26} color="#2563EB" /></View>
+        <View style={s.heroPulse} />
       </View>
-    </ScrollView>
-  );
+      <Text style={s.cardTitle}>Get Started</Text>
+      <Text style={s.cardSub}>Enter your mobile number to receive a 4-digit verification code</Text>
 
-  const renderStep2 = () => (
-    <ScrollView
-      style={styles.flex}
-      contentContainerStyle={styles.scrollContainer}
-      showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
-      bounces>
+      <View style={s.infoStrip}>
+        <MaterialIcons name="lock" size={14} color="#2563EB" />
+        <Text style={s.infoText}>End-to-end encrypted · Secure verification</Text>
+      </View>
+
+      <FormField
+        {...fp}
+        label="Mobile Number" icon="phone"
+        placeholder="Enter 10-digit mobile number"
+        value={mobileNumber}
+        onChangeText={t => { setMobileNumber(t); if (mobileError) setMobileError(''); }}
+        keyboardType="phone-pad" maxLength={10} autoCapitalize="none"
+      />
+      <FieldError message={mobileError} />
+
       <TouchableOpacity
-        style={styles.backButton}
-        onPress={() => {
-          console.log('Back button pressed, returning to step 1');
-          setStep(1);
-        }}>
-        <MaterialIcons name="arrow-back-ios-new" size={16} color="#2563EB" />
-        <Text style={styles.backButtonText}>Back</Text>
+        style={[s.btn, loading && s.btnOff]}
+        onPress={handleSendOTP} disabled={loading} activeOpacity={0.85}>
+        {loading
+          ? <ActivityIndicator color="#FFF" size="small" />
+          : <><Text style={s.btnTxt}>Send OTP</Text><View style={s.btnChip}><MaterialIcons name="arrow-forward" size={15} color="#2563EB" /></View></>}
       </TouchableOpacity>
+    </View>
+  );
 
-      <View style={styles.mainCard}>
-        <View style={styles.heroIcon}>
-          <MaterialIcons name="mark-email-read" size={34} color="#2563EB" />
+  // ── Step 2 ─────────────────────────────────────────────────────────────────────
+  const renderStep2 = () => (
+    <View>
+      <TouchableOpacity style={s.backBtn} onPress={() => animStep(() => setStep(1))}>
+        <MaterialIcons name="arrow-back-ios-new" size={13} color="#2563EB" />
+        <Text style={s.backTxt}>Back</Text>
+      </TouchableOpacity>
+      <View style={s.card}>
+        <View style={s.heroWrap}>
+          <View style={s.heroIcon}><MaterialIcons name="sms" size={26} color="#2563EB" /></View>
+          <View style={s.heroPulse} />
         </View>
-
-        <Text style={styles.title}>Verify Your Number</Text>
-        <Text style={styles.subtitle}>
-          Enter the OTP sent to +91 {mobileNumber}
+        <Text style={s.cardTitle}>Verify Number</Text>
+        <Text style={s.cardSub}>
+          Enter the 4-digit code sent to{'\n'}
+          <Text style={s.highlight}>+91 {mobileNumber}</Text>
         </Text>
 
-        <View style={styles.otpCard}>
-          <MaterialIcons name="sms" size={18} color="#2563EB" />
-          <Text style={styles.otpCardText}>A verification code has been sent</Text>
-        </View>
-
-        {renderField({
-          label: 'One-Time Password',
-          icon: 'password',
-          placeholder: 'Enter OTP',
-          value: otpCode,
-          onChangeText: (text) => {
-            console.log('OTP input changed:', text);
-            setOtpCode(text);
-          },
-          keyboardType: 'number-pad',
-          maxLength: 6,
-          autoCapitalize: 'none',
-        })}
+        <Text style={[s.fieldLabel, { textAlign: 'center', marginBottom: 4 }]}>ONE-TIME PASSWORD</Text>
+        <OTPInput value={otpCode} onChange={setOtpCode} hasError={!!otpError} />
+        <FieldError message={otpError} />
 
         <TouchableOpacity
-          style={[styles.primaryButton, loading && styles.buttonDisabled]}
-          onPress={handleVerifyOTP}
-          disabled={loading}>
-          {loading ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <>
-              <Text style={styles.primaryButtonText}>Verify OTP</Text>
-              <MaterialIcons name="check-circle" size={18} color="#FFFFFF" />
-            </>
-          )}
+          style={[s.btn, loading && s.btnOff, { marginTop: 18 }]}
+          onPress={handleVerifyOTP} disabled={loading} activeOpacity={0.85}>
+          {loading
+            ? <ActivityIndicator color="#FFF" size="small" />
+            : <><Text style={s.btnTxt}>Verify & Continue</Text><View style={s.btnChip}><MaterialIcons name="check" size={15} color="#2563EB" /></View></>}
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.secondaryButton, (countdown > 0 || loading) && styles.secondaryButtonDisabled]}
-          onPress={handleResendOTP}
-          disabled={countdown > 0 || loading}>
-          <MaterialIcons
-            name="refresh"
-            size={18}
-            color={countdown > 0 || loading ? '#94A3B8' : '#2563EB'}
-          />
-          <Text
-            style={[
-              styles.secondaryButtonText,
-              (countdown > 0 || loading) && styles.secondaryButtonTextDisabled,
-            ]}>
-            {countdown > 0 ? `Resend OTP in ${countdown}s` : 'Resend OTP'}
+          style={[s.ghost, (countdown > 0 || loading) && s.ghostOff]}
+          onPress={handleResendOTP} disabled={countdown > 0 || loading} activeOpacity={0.7}>
+          <MaterialIcons name="refresh" size={15} color={countdown > 0 || loading ? '#94A3B8' : '#2563EB'} />
+          <Text style={[s.ghostTxt, (countdown > 0 || loading) && s.ghostTxtOff]}>
+            {countdown > 0 ? `Resend in ${countdown}s` : 'Resend OTP'}
           </Text>
         </TouchableOpacity>
       </View>
-    </ScrollView>
+    </View>
   );
 
+  // ── Step 3 ─────────────────────────────────────────────────────────────────────
   const renderStep3 = () => (
-    <KeyboardAvoidingView
-      style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView
-        style={styles.flex}
-        contentContainerStyle={styles.scrollContainer}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        bounces>
+    <View>
+      <TouchableOpacity style={s.backBtn} onPress={() => animStep(() => setStep(2))}>
+        <MaterialIcons name="arrow-back-ios-new" size={13} color="#2563EB" />
+        <Text style={s.backTxt}>Back</Text>
+      </TouchableOpacity>
+      <View style={s.card}>
+        <View style={s.heroWrap}>
+          <View style={s.heroIcon}><MaterialIcons name="badge" size={26} color="#2563EB" /></View>
+          <View style={s.heroPulse} />
+        </View>
+        <Text style={s.cardTitle}>Complete Profile</Text>
+        <Text style={s.cardSub}>Fill in your professional details to finish registration</Text>
+
+        <View style={s.sectionRow}><View style={s.sectionBar} /><Text style={s.sectionTxt}>Professional Info</Text></View>
+
+        <FormField {...fp} label="Full Name"      icon="person"        placeholder="Dr. Full Name"       errorKey="dr_name"    value={formData.dr_name}    onChangeText={t => setFormData(f => ({ ...f, dr_name: t }))} />
+        <FormField {...fp} label="Medical Degree" icon="school"        placeholder="e.g. MBBS, MD, MS"  errorKey="dr_degree"  value={formData.dr_degree}  onChangeText={t => setFormData(f => ({ ...f, dr_degree: t }))} />
+        <FormField {...fp} label="Email Address"  icon="email"         placeholder="doctor@example.com" errorKey="dr_email"   value={formData.dr_email}   onChangeText={t => setFormData(f => ({ ...f, dr_email: t }))}   keyboardType="email-address" autoCapitalize="none" />
+        <FormField {...fp} label="City"           icon="location-city" placeholder="Enter your city"    errorKey="dr_city"    value={formData.dr_city}    onChangeText={t => setFormData(f => ({ ...f, dr_city: t }))} />
+        <FormField {...fp} label="Clinic / Hospital Address" icon="location-on" placeholder="Full address" errorKey="dr_address" value={formData.dr_address} onChangeText={t => setFormData(f => ({ ...f, dr_address: t }))} multiline numberOfLines={3} />
+
+        <View style={s.sectionRow}><View style={s.sectionBar} /><Text style={s.sectionTxt}>Set Password</Text></View>
+
+        <FormField {...fp} label="Password"         icon="lock"         placeholder="Create a strong password" errorKey="dr_password"    value={formData.dr_password}    onChangeText={t => setFormData(f => ({ ...f, dr_password: t }))}    secureTextEntry autoCapitalize="none" />
+        <FormField {...fp} label="Confirm Password" icon="lock-outline" placeholder="Re-enter your password"   errorKey="confirmPassword" value={formData.confirmPassword} onChangeText={t => setFormData(f => ({ ...f, confirmPassword: t }))} secureTextEntry autoCapitalize="none" />
+
         <TouchableOpacity
-          style={styles.backButton}
-          onPress={() => {
-            console.log('Back button pressed, returning to step 2');
-            setStep(2);
-          }}>
-          <MaterialIcons name="arrow-back-ios-new" size={16} color="#2563EB" />
-          <Text style={styles.backButtonText}>Back</Text>
+          style={[s.btn, s.btnGreen, loading && s.btnOff]}
+          onPress={handleRegister} disabled={loading} activeOpacity={0.85}>
+          {loading
+            ? <ActivityIndicator color="#FFF" size="small" />
+            : <><Text style={s.btnTxt}>Complete Registration</Text><View style={s.btnChip}><MaterialIcons name="check" size={15} color="#16A34A" /></View></>}
         </TouchableOpacity>
 
-        <View style={styles.mainCard}>
-          <View style={styles.heroIcon}>
-            <MaterialIcons name="person-add-alt-1" size={34} color="#2563EB" />
-          </View>
-
-          <Text style={styles.title}>Complete Profile</Text>
-          <Text style={styles.subtitle}>
-            Fill in your details to finish registration
-          </Text>
-
-          <Text style={styles.sectionTitle}>Basic Details</Text>
-
-          {renderField({
-            label: 'Full Name',
-            icon: 'person',
-            placeholder: 'Enter your full name',
-            value: formData.dr_name,
-            onChangeText: (text) => setFormData({ ...formData, dr_name: text }),
-          })}
-
-          {renderField({
-            label: 'Degree',
-            icon: 'school',
-            placeholder: 'e.g. MBBS, MD',
-            value: formData.dr_degree,
-            onChangeText: (text) => setFormData({ ...formData, dr_degree: text }),
-          })}
-
-          {renderField({
-            label: 'Email Address',
-            icon: 'email',
-            placeholder: 'Enter your email address',
-            value: formData.dr_email,
-            onChangeText: (text) => setFormData({ ...formData, dr_email: text }),
-            keyboardType: 'email-address',
-            autoCapitalize: 'none',
-          })}
-
-          {renderField({
-            label: 'City',
-            icon: 'location-city',
-            placeholder: 'Enter your city',
-            value: formData.dr_city,
-            onChangeText: (text) => setFormData({ ...formData, dr_city: text }),
-          })}
-
-          {renderField({
-            label: 'Address',
-            icon: 'location-on',
-            placeholder: 'Clinic / Hospital Address',
-            value: formData.dr_address,
-            onChangeText: (text) => setFormData({ ...formData, dr_address: text }),
-            multiline: true,
-            numberOfLines: 4,
-          })}
-
-          <Text style={styles.sectionTitle}>Security</Text>
-
-          {renderField({
-            label: 'Password',
-            icon: 'lock',
-            placeholder: 'Create password',
-            value: formData.dr_password,
-            onChangeText: (text) => setFormData({ ...formData, dr_password: text }),
-            secureTextEntry: true,
-            autoCapitalize: 'none',
-          })}
-
-          {renderField({
-            label: 'Confirm Password',
-            icon: 'lock-outline',
-            placeholder: 'Confirm password',
-            value: formData.confirmPassword,
-            onChangeText: (text) => setFormData({ ...formData, confirmPassword: text }),
-            secureTextEntry: true,
-            autoCapitalize: 'none',
-          })}
-
-          <TouchableOpacity
-            style={[styles.primaryButton, loading && styles.buttonDisabled]}
-            onPress={handleRegister}
-            disabled={loading}>
-            {loading ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <>
-                <Text style={styles.primaryButtonText}>Complete Registration</Text>
-                <MaterialIcons name="check-circle" size={18} color="#FFFFFF" />
-              </>
-            )}
+        <View style={s.loginRow}>
+          <Text style={s.loginTxt}>Already have an account? </Text>
+          <TouchableOpacity onPress={() => router.replace('/doctor-login')} activeOpacity={0.7}>
+            <Text style={s.loginLink}>Sign In</Text>
           </TouchableOpacity>
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </View>
+    </View>
   );
 
+  // ── Root render ────────────────────────────────────────────────────────────────
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F5F7FB" />
-      <View style={styles.container}>
-        {renderHeader()}
-        {step === 1 && renderStep1()}
-        {step === 2 && renderStep2()}
-        {step === 3 && renderStep3()}
+    <SafeAreaView style={s.safe}>
+      <StatusBar barStyle="dark-content" backgroundColor="#F0F4FF" />
+
+      {/* Floating toast layer */}
+      <View style={s.toastLayer} pointerEvents="box-none">
+        {toasts.map(t => <ToastItem key={t.id} toast={t} onDismiss={dismissToast} />)}
       </View>
+
+      <KeyboardAvoidingView
+        style={s.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}>
+
+        <ScrollView
+          style={s.flex}
+          contentContainerStyle={s.scroll}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          bounces={false}>
+
+          {/* Compact header with slim step bar */}
+          <View style={s.header}>
+            <View style={s.badge}>
+              <MaterialIcons name="local-hospital" size={12} color="#1D4ED8" />
+              <Text style={s.badgeTxt}>Doctor Registration</Text>
+            </View>
+            <Text style={s.headerTitle}>Create Account</Text>
+            <Text style={s.headerSub}>Join our verified medical network</Text>
+            <StepBar step={step} />
+          </View>
+
+          {/* Animated step content */}
+          <Animated.View style={[s.stepWrap, { opacity: fadeAnim }]}>
+            {step === 1 && renderStep1()}
+            {step === 2 && renderStep2()}
+            {step === 3 && renderStep3()}
+          </Animated.View>
+
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#F5F7FB',
-  },
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F7FB',
-  },
-  flex: {
-    flex: 1,
-  },
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const s = StyleSheet.create({
+  safe:  { flex: 1, backgroundColor: '#F0F4FF' },
+  flex:  { flex: 1 },
 
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 18,
-  },
-  topBadge: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#EAF2FF',
-    borderColor: '#D5E4FF',
-    borderWidth: 1,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    marginBottom: 14,
-  },
-  topBadgeText: {
-    marginLeft: 6,
-    fontSize: 12,
-    color: '#1D4ED8',
-    fontWeight: '700',
-  },
-  headerTitle: {
-    fontSize: 30,
-    fontWeight: '800',
-    color: '#0F172A',
-    marginBottom: 6,
-  },
-  headerSubtitle: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: '#64748B',
-    marginBottom: 18,
-  },
+  toastLayer: { position: 'absolute', top: 10, left: 16, right: 16, zIndex: 999 },
 
-  progressCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.07,
-    shadowRadius: 16,
-    elevation: 4,
-  },
-  progressTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 14,
-  },
-  progressTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  progressCount: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#2563EB',
-  },
-  progressRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepCircle: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#E2E8F0',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepCircleActive: {
-    backgroundColor: '#2563EB',
-  },
-  stepNumber: {
-    color: '#64748B',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  stepNumberActive: {
-    color: '#FFFFFF',
-  },
-  stepLine: {
-    flex: 1,
-    height: 4,
-    backgroundColor: '#E2E8F0',
-    marginHorizontal: 8,
-    borderRadius: 999,
-  },
-  stepLineActive: {
-    backgroundColor: '#2563EB',
-  },
-  progressLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 12,
-  },
-  progressLabel: {
-    fontSize: 12,
-    color: '#94A3B8',
-    fontWeight: '600',
-  },
-  progressLabelActive: {
-    color: '#2563EB',
-  },
+  scroll: { paddingBottom: 48, flexGrow: 1 },
 
-  scrollContainer: {
-    paddingHorizontal: 20,
-    paddingBottom: 32,
-    flexGrow: 1,
-  },
+  // Header
+  header:      { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 16 },
+  badge:       { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', backgroundColor: '#DBEAFE', borderColor: '#BFDBFE', borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 5, marginBottom: 10, gap: 5 },
+  badgeTxt:    { fontSize: 11, color: '#1D4ED8', fontWeight: '700', letterSpacing: 0.3 },
+  headerTitle: { fontSize: 26, fontWeight: '800', color: '#0F172A', letterSpacing: -0.4, marginBottom: 3 },
+  headerSub:   { fontSize: 13, color: '#64748B', marginBottom: 14 },
 
-  backButton: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 4,
-    marginBottom: 10,
-  },
-  backButtonText: {
-    color: '#2563EB',
-    fontSize: 15,
-    fontWeight: '700',
-    marginLeft: 4,
-  },
+  stepWrap: { paddingHorizontal: 20 },
 
-  mainCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 28,
-    padding: 22,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.07,
-    shadowRadius: 20,
-    elevation: 5,
-  },
+  // Back button
+  backBtn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', paddingVertical: 8, paddingHorizontal: 2, marginBottom: 8, gap: 4 },
+  backTxt: { fontSize: 14, fontWeight: '700', color: '#2563EB' },
 
-  heroIcon: {
-    width: 76,
-    height: 76,
-    borderRadius: 24,
-    backgroundColor: '#EEF4FF',
-    borderWidth: 1,
-    borderColor: '#D9E7FF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    alignSelf: 'center',
-    marginBottom: 18,
-  },
+  // Card
+  card: { backgroundColor: '#FFFFFF', borderRadius: 24, padding: 20, borderWidth: 1, borderColor: '#E2E8F0', shadowColor: '#1E40AF', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.07, shadowRadius: 20, elevation: 4 },
 
-  title: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: '#0F172A',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: '#64748B',
-    textAlign: 'center',
-    marginBottom: 22,
-  },
+  // Hero icon
+  heroWrap:  { alignSelf: 'center', marginBottom: 16, position: 'relative' },
+  heroIcon:  { width: 64, height: 64, borderRadius: 20, backgroundColor: '#EEF4FF', borderWidth: 1.5, borderColor: '#BFDBFE', alignItems: 'center', justifyContent: 'center' },
+  heroPulse: { position: 'absolute', top: -4, left: -4, right: -4, bottom: -4, borderRadius: 24, borderWidth: 1, borderColor: '#BFDBFE', opacity: 0.5 },
 
-  infoCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F8FBFF',
-    borderWidth: 1,
-    borderColor: '#D8E7FF',
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 20,
-  },
-  infoText: {
-    flex: 1,
-    marginLeft: 10,
-    fontSize: 13,
-    lineHeight: 18,
-    color: '#334155',
-    fontWeight: '500',
-  },
+  cardTitle: { fontSize: 22, fontWeight: '800', color: '#0F172A', textAlign: 'center', marginBottom: 5, letterSpacing: -0.3 },
+  cardSub:   { fontSize: 13, lineHeight: 20, color: '#64748B', textAlign: 'center', marginBottom: 18 },
+  highlight: { color: '#2563EB', fontWeight: '700' },
 
-  otpCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F0F9FF',
-    borderWidth: 1,
-    borderColor: '#D8EEFF',
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    marginBottom: 20,
-  },
-  otpCardText: {
-    marginLeft: 8,
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
+  // Info strip
+  infoStrip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0F9FF', borderWidth: 1, borderColor: '#BAE6FD', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16, gap: 7 },
+  infoText:  { fontSize: 12, color: '#0369A1', fontWeight: '600' },
 
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#0F172A',
-    marginTop: 6,
-    marginBottom: 14,
-  },
+  // Section dividers
+  sectionRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, marginBottom: 12, gap: 8 },
+  sectionBar: { width: 4, height: 16, backgroundColor: '#2563EB', borderRadius: 2 },
+  sectionTxt: { fontSize: 14, fontWeight: '800', color: '#0F172A' },
 
-  fieldGroup: {
-    marginBottom: 16,
-  },
-  fieldLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#334155',
-    marginBottom: 8,
-    paddingLeft: 4,
-  },
-  inputShell: {
-    minHeight: 60,
-    borderRadius: 18,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-  },
-  inputShellTextArea: {
-    alignItems: 'flex-start',
-    paddingTop: 12,
-  },
-  iconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
-    backgroundColor: '#EEF4FF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  input: {
-    flex: 1,
-    fontSize: 16,
-    color: '#0F172A',
-    paddingVertical: 16,
-  },
-  textArea: {
-    minHeight: 96,
-    textAlignVertical: 'top',
-    paddingTop: 14,
-  },
+  // Form fields
+  fieldGroup:      { marginBottom: 12 },
+  fieldLabel:      { fontSize: 11, fontWeight: '700', color: '#475569', marginBottom: 6, paddingLeft: 2, textTransform: 'uppercase', letterSpacing: 0.5 },
+  inputShell:      { minHeight: 54, borderRadius: 14, backgroundColor: '#F8FAFC', borderWidth: 1.5, borderColor: '#E2E8F0', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10 },
+  inputShellMulti: { alignItems: 'flex-start', paddingTop: 10 },
+  inputShellErr:   { borderColor: '#FCA5A5', backgroundColor: '#FFF5F5' },
+  iconBox:    { width: 32, height: 32, borderRadius: 9, backgroundColor: '#EEF4FF', alignItems: 'center', justifyContent: 'center', marginRight: 9 },
+  iconBoxErr: { backgroundColor: '#FEE2E2' },
+  input:      { flex: 1, fontSize: 15, color: '#0F172A', paddingVertical: 14 },
+  textArea:   { minHeight: 76, textAlignVertical: 'top', paddingTop: 10 },
 
-  primaryButton: {
-    minHeight: 58,
-    borderRadius: 18,
-    backgroundColor: '#2563EB',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 10,
-    gap: 8,
-    shadowColor: '#2563EB',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.22,
-    shadowRadius: 16,
-    elevation: 5,
-  },
-  primaryButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  buttonDisabled: {
-    backgroundColor: '#94A3B8',
-    shadowOpacity: 0,
-    elevation: 0,
-  },
+  // Buttons
+  btn:      { minHeight: 54, borderRadius: 14, backgroundColor: '#2563EB', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 12, paddingHorizontal: 18, shadowColor: '#2563EB', shadowOffset: { width: 0, height: 7 }, shadowOpacity: 0.28, shadowRadius: 14, elevation: 6 },
+  btnGreen: { backgroundColor: '#16A34A', shadowColor: '#16A34A' },
+  btnOff:   { backgroundColor: '#94A3B8', shadowOpacity: 0, elevation: 0 },
+  btnTxt:   { color: '#FFF', fontSize: 15, fontWeight: '800', letterSpacing: 0.2 },
+  btnChip:  { width: 26, height: 26, borderRadius: 7, backgroundColor: '#FFF', alignItems: 'center', justifyContent: 'center', marginLeft: 10 },
 
-  secondaryButton: {
-    minHeight: 52,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#D8E7FF',
-    backgroundColor: '#F8FBFF',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 14,
-    gap: 8,
-  },
-  secondaryButtonDisabled: {
-    opacity: 0.75,
-  },
-  secondaryButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#2563EB',
-  },
-  secondaryButtonTextDisabled: {
-    color: '#94A3B8',
-  },
+  ghost:       { minHeight: 48, borderRadius: 12, borderWidth: 1.5, borderColor: '#BFDBFE', backgroundColor: '#F0F4FF', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: 10, gap: 7 },
+  ghostOff:    { opacity: 0.6 },
+  ghostTxt:    { fontSize: 13, fontWeight: '700', color: '#2563EB' },
+  ghostTxtOff: { color: '#94A3B8' },
+
+  loginRow:  { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 16 },
+  loginTxt:  { fontSize: 13, color: '#64748B' },
+  loginLink: { fontSize: 13, fontWeight: '800', color: '#2563EB' },
 });

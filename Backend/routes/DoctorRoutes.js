@@ -3,6 +3,9 @@ const router = express.Router();
 const Doctor = require("../models/DoctorModel");
 const axios = require("axios");
 const jwt = require('jsonwebtoken')
+const SetDoctorAppointment = require("../models/doctorSetAppointment");
+const verifyDoctorsToken = require("../middlewares/verifyDoctorToken");
+
 
 // Send OTP Route
 router.post("/send-otp", async (req, res) => {
@@ -63,9 +66,9 @@ router.post("/send-otp", async (req, res) => {
 
     const options = {
       method: "POST",
-      url: `https://cpaas.messagecentral.com/verification/v3/send?countryCode=91&customerId=C-6D16D900FA3044F&flowType=SMS&mobileNumber=${mobileNumber}`,
+      url: `https://cpaas.messagecentral.com/verification/v3/send?countryCode=91&customerId=C-019F646DA2204BC&flowType=SMS&mobileNumber=${mobileNumber}`,
       headers: {
-        authToken: "eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJDLTZEMTZEOTAwRkEzMDQ0RiIsImlhdCI6MTc3NzA1NTAyNSwiZXhwIjoxOTM0NzM1MDI1fQ.M1JGE1L837hn6ZtTqFqr6_OHd4F5j2aCA4EwAryItZVE1kVNAfAFAxgR_KVQOBhBAx9HrtGJJmTkcy3SCNU9Ow",
+        authToken: "eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJDLTAxOUY2NDZEQTIyMDRCQyIsImlhdCI6MTc3NzE0NDg4OSwiZXhwIjoxOTM0ODI0ODg5fQ.vetqJqpNgEQq-NRuyopZYwAxONjqMdgdXQ4-aCEFbDJEcPaa4ZTa5rP_O0rRWGU_lywET4Cdj0Y1KdR9nKh-cw",
       },
     };
 
@@ -166,9 +169,9 @@ router.post("/verify-otp", async (req, res) => {
     // Verify OTP with external API
     const options = {
       method: "GET",
-      url: `https://cpaas.messagecentral.com/verification/v3/validateOtp?countryCode=91&mobileNumber=${mobileNumber}&verificationId=${finalVerificationId}&customerId=C-6D16D900FA3044F&code=${otpCode}`,
+      url: `https://cpaas.messagecentral.com/verification/v3/validateOtp?countryCode=91&mobileNumber=${mobileNumber}&verificationId=${finalVerificationId}&customerId=C-019F646DA2204BC&code=${otpCode}`,
       headers: {
-        authToken: "eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJDLTZEMTZEOTAwRkEzMDQ0RiIsImlhdCI6MTc3NzA1NTAyNSwiZXhwIjoxOTM0NzM1MDI1fQ.M1JGE1L837hn6ZtTqFqr6_OHd4F5j2aCA4EwAryItZVE1kVNAfAFAxgR_KVQOBhBAx9HrtGJJmTkcy3SCNU9Ow",
+        authToken: "eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJDLTAxOUY2NDZEQTIyMDRCQyIsImlhdCI6MTc3NzE0NDg4OSwiZXhwIjoxOTM0ODI0ODg5fQ.vetqJqpNgEQq-NRuyopZYwAxONjqMdgdXQ4-aCEFbDJEcPaa4ZTa5rP_O0rRWGU_lywET4Cdj0Y1KdR9nKh-cw",
       },
     };
 
@@ -343,9 +346,9 @@ router.post("/resend-otp", async (req, res) => {
 
     const options = {
       method: "POST",
-      url: `https://cpaas.messagecentral.com/verification/v3/send?countryCode=91&customerId=C-6D16D900FA3044F&flowType=SMS&mobileNumber=${mobileNumber}`,
+      url: `https://cpaas.messagecentral.com/verification/v3/send?countryCode=91&customerId=C-019F646DA2204BC&flowType=SMS&mobileNumber=${mobileNumber}`,
       headers: {
-        authToken: "eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJDLTZEMTZEOTAwRkEzMDQ0RiIsImlhdCI6MTc3NzA1NTAyNSwiZXhwIjoxOTM0NzM1MDI1fQ.M1JGE1L837hn6ZtTqFqr6_OHd4F5j2aCA4EwAryItZVE1kVNAfAFAxgR_KVQOBhBAx9HrtGJJmTkcy3SCNU9Ow",
+        authToken: "eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJDLTAxOUY2NDZEQTIyMDRCQyIsImlhdCI6MTc3NzE0NDg4OSwiZXhwIjoxOTM0ODI0ODg5fQ.vetqJqpNgEQq-NRuyopZYwAxONjqMdgdXQ4-aCEFbDJEcPaa4ZTa5rP_O0rRWGU_lywET4Cdj0Y1KdR9nKh-cw",
       },
     };
 
@@ -529,4 +532,122 @@ router.get("/getAllDoctors", async (req, res) => {
 });
 
 
+router.post("/setDoctorAppointment", verifyDoctorsToken, async (req, res) => {
+  try {
+    const doctor_id = req.doctor.id; // from middleware
+
+    const payload = req.body;
+
+    if (!payload || (Array.isArray(payload) && payload.length === 0)) {
+      return res.status(400).json({
+        success: false,
+        message: "Request body is required",
+      });
+    }
+
+    const appointments = Array.isArray(payload) ? payload : [payload];
+
+    const created = [];
+
+    for (const item of appointments) {
+      const timeslot = item.timeslot?.trim();
+      const day = item.day?.trim().toLowerCase();
+
+      if (!timeslot || !day) {
+        return res.status(400).json({
+          success: false,
+          message: "day and timeslot are required",
+        });
+      }
+
+      const existing = await SetDoctorAppointment.findOne({
+        doctor_id,
+        day,
+        timeslot,
+      });
+
+      if (existing) {
+        return res.status(409).json({
+          success: false,
+          message: `Slot already exists for ${day} ${timeslot}`,
+        });
+      }
+
+      const newSlot = await SetDoctorAppointment.create({
+        doctor_id,
+        mr_id: null,
+        day,
+        timeslot,
+      });
+
+      created.push(newSlot);
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: `${created.length} slot(s) created successfully`,
+      count: created.length,
+      data: created,
+    });
+  } catch (error) {
+    console.error("[SET DOCTOR APPOINTMENT ERROR]", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create slot(s)",
+    });
+  }
+});
+
+
+
+
+
+// GET ALL APPOINTMENT SLOTS OF LOGGED-IN DOCTOR
+router.get("/getDoctorsAppointments", verifyDoctorsToken, async (req, res) => {
+  try {
+    console.log("\n========== GET DOCTOR APPOINTMENTS ==========");
+
+    // doctor id from middleware
+    const doctorId = req.doctor.id;
+
+    console.log("Logged In Doctor ID:", doctorId);
+
+    const appointments = await SetDoctorAppointment.find(
+      { doctor_id: doctorId },
+      {
+        _id: 1,
+        doctor_id: 1,
+        mr_id: 1,
+        day: 1,
+        timeslot: 1,
+        isBooked: 1,
+        createdAt: 1,
+      }
+    )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    console.log("Total Slots Found:", appointments.length);
+
+    return res.status(200).json({
+      success: true,
+      message: "Doctor appointment slots fetched successfully",
+      count: appointments.length,
+      data: appointments,
+    });
+  } catch (error) {
+    console.error("[GET DOCTOR APPOINTMENTS ERROR]", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch doctor appointment slots",
+    });
+  }
+});
+
+
+
 module.exports = router;
+
+

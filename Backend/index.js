@@ -5,7 +5,7 @@ const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
 const connectDB = require("./config/db");
-const doctorRoutes = require('./routes/doctorRoutes');
+const doctorRoutes = require('./routes/DoctorRoutes');
 const mrRoutes = require('./routes/MedicalRepresentativeRoute')
 
 dotenv.config();

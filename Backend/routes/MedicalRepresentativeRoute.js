@@ -7,8 +7,10 @@ const cloudinary = require("cloudinary").v2;
 const multer = require("multer");
 const path = require("path");
 const Doctor = require("../models/DoctorModel");
-
 const verifyMrToken = require("../middlewares/verifyMrToken");
+const setDoctorAppointment = require("../models/doctorSetAppointment");
+const BookAppointment = require("../models/BookAppointment");
+const getistDateStart = require("../utils/datehelper");
 
 console.log('\n========== MEDICAL REPRESENTATIVE ROUTE INIT ==========');
 
@@ -145,7 +147,7 @@ router.post("/send-otp", async (req, res) => {
 
     const options = {
       method: "POST",
-      url: `https://cpaas.messagecentral.com/verification/v3/send?countryCode=91&customerId=C-6D16D900FA3044F&flowType=SMS&mobileNumber=${mobileNumber}`,
+      url: `https://cpaas.messagecentral.com/verification/v3/send?countryCode=91&customerId=C-019F646DA2204BC&flowType=SMS&mobileNumber=${mobileNumber}`,
       headers: {
         authToken: process.env.OTP_AUTH_TOKEN,
       },
@@ -222,7 +224,7 @@ router.post("/verify-otp", async (req, res) => {
 
     const options = {
       method: "GET",
-      url: `https://cpaas.messagecentral.com/verification/v3/validateOtp?countryCode=91&mobileNumber=${mobileNumber}&verificationId=${finalVerificationId}&customerId=C-6D16D900FA3044F&code=${otpCode}`,
+      url: `https://cpaas.messagecentral.com/verification/v3/validateOtp?countryCode=91&mobileNumber=${mobileNumber}&verificationId=${finalVerificationId}&customerId=C-019F646DA2204BC&code=${otpCode}`,
       headers: {
         authToken: process.env.OTP_AUTH_TOKEN,
       },
@@ -492,7 +494,7 @@ router.post("/resend-otp", async (req, res) => {
 
     const options = {
       method: "POST",
-      url: `https://cpaas.messagecentral.com/verification/v3/send?countryCode=91&customerId=C-6D16D900FA3044F&flowType=SMS&mobileNumber=${mobileNumber}`,
+      url: `https://cpaas.messagecentral.com/verification/v3/send?countryCode=91&customerId=C-019F646DA2204BC&flowType=SMS&mobileNumber=${mobileNumber}`,
       headers: {
         authToken: process.env.OTP_AUTH_TOKEN,
       },
@@ -707,7 +709,7 @@ router.get("/getDoctorsByCity", verifyMrToken, async (req, res) => {
         dr_city: { $regex: new RegExp(`^${mrCity}$`, "i") },
       },
       {
-        _id: 0,
+        _id: 1,
         dr_name: 1,
         dr_degree: 1,
         dr_email: 1,
@@ -718,6 +720,7 @@ router.get("/getDoctorsByCity", verifyMrToken, async (req, res) => {
     ).lean();
 
     const formattedDoctors = doctors.map((doc) => ({
+      id : doc._id,
       name: doc.dr_name,
       degree: doc.dr_degree,
       email: doc.dr_email,
@@ -742,6 +745,231 @@ router.get("/getDoctorsByCity", verifyMrToken, async (req, res) => {
   }
 }); 
 
+
+router.post( "/mr-doctor-get-appointment", verifyMrToken,
+  async (req, res) => {
+    try {
+      console.log("\n========== MR GET DOCTOR APPOINTMENTS ==========");
+
+      const { doctor_id } = req.body;
+
+      if (!doctor_id) {
+        return res.status(400).json({
+          success: false,
+          message: "doctor_id is required",
+        });
+      }
+
+      // ✅ 1. Get today's date (normalized)
+      const today = new Date(
+        new Date().toLocaleString("en-US", {
+          timeZone: "Asia/Kolkata",
+        })
+      );
+      today.setHours(0, 0, 0, 0);
+
+      console.log("Today Date:", today);
+
+      // ✅ 2. Get all slots created by doctor
+      const slots = await setDoctorAppointment
+        .find({ doctor_id })
+        .sort({ createdAt: -1 });
+
+      if (!slots || slots.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "No slots found for this doctor",
+          data: [],
+        });
+      }
+
+      // ✅ 3. Get today's booked slots
+      const bookedAppointments = await BookAppointment.find({
+        doctor_id,
+        date: today,
+      });
+
+      // extract booked slot_ids
+      const bookedSlotIds = new Set(
+        bookedAppointments.map((b) => b.slot_id.toString())
+      );
+
+      // ✅ 4. Attach isBooked flag
+      const updatedSlots = slots.map((slot) => {
+        const isBooked = bookedSlotIds.has(slot._id.toString());
+
+        return {
+          ...slot.toObject(),
+          isBooked, // 👈 IMPORTANT FLAG
+        };
+      });
+
+      // ✅ 5. Send response
+      return res.status(200).json({
+        success: true,
+        message: "Doctor slots fetched successfully",
+        total: updatedSlots.length,
+        data: updatedSlots,
+      });
+
+    } catch (error) {
+      console.error(
+        "Error in /mr-doctor-get-appointment:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: "Internal server error",
+        error: error.message,
+      });
+    }
+  }
+);
+
+
+router.post("/mr-book-appointment", verifyMrToken, async (req, res) => {
+  try {
+    console.log("\n========== MR BOOK APPOINTMENT ==========");
+
+    const { doctor_id, slot_id } = req.body;
+    const mr_id = req.mr.id;
+
+    if (!doctor_id || !slot_id) {
+      return res.status(400).json({
+        success: false,
+        message: "doctor_id and slot_id are required",
+      });
+    }
+
+    // ✅ FIX: Proper IST date (NO string conversion)
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000; // IST = UTC +5:30
+    const istNow = new Date(now.getTime() + istOffset);
+
+    // normalize to start of IST day
+    const today = new Date(istNow);
+    today.setHours(0, 0, 0, 0);
+
+    console.log("IST Today:", today);
+
+    // ✅ Month boundaries based on IST
+    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const startOfNextMonth = new Date(
+      today.getFullYear(),
+      today.getMonth() + 1,
+      1
+    );
+
+    // ✅ Monthly rule
+    const existingMonthlyBooking = await BookAppointment.findOne({
+      doctor_id,
+      mr_id,
+      date: {
+        $gte: startOfMonth,
+        $lt: startOfNextMonth,
+      },
+    });
+
+    if (existingMonthlyBooking) {
+      return res.status(400).json({
+        success: false,
+        message: "You have already booked this doctor in this month",
+      });
+    }
+
+    // ✅ Create appointment
+    const appointment = await BookAppointment.create({
+      doctor_id,
+      slot_id,
+      mr_id,
+      date: today,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Appointment booked successfully",
+      data: appointment,
+    });
+
+  } catch (error) {
+    console.error("BOOK APPOINTMENT ERROR:", error);
+
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: "Slot already booked for today",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+});
+
+
+
+
+router.get("/get-mr-appointments",verifyMrToken,
+  async (req, res) => {
+    try {
+      const mr_id = req.mr.id;
+
+      // ✅ IST TODAY (INLINE FIX)
+      const now = new Date();
+      const istOffset = 5.5 * 60 * 60 * 1000;
+      const istNow = new Date(now.getTime() + istOffset);
+
+      const today = new Date(
+        istNow.getFullYear(),
+        istNow.getMonth(),
+        istNow.getDate()
+      );
+
+      console.log("IST Today:", today);
+
+      const appointments = await BookAppointment.find({ mr_id })
+        .populate("doctor_id")
+        .populate("slot_id")
+        .sort({ date: -1 });
+
+      const updatedAppointments = appointments.map((appt) => {
+        // ✅ Convert appointment date to IST properly
+        const apptUTC = new Date(appt.date);
+        const apptIST = new Date(apptUTC.getTime() + istOffset);
+
+        const apptDate = new Date(
+          apptIST.getFullYear(),
+          apptIST.getMonth(),
+          apptIST.getDate()
+        );
+
+        const status = apptDate < today ? "past" : "live";
+
+        return {
+          ...appt.toObject(),
+          status,
+        };
+      });
+
+      res.json({
+        success: true,
+        data: updatedAppointments,
+      });
+
+    } catch (err) {
+      console.error("GET MR APPOINTMENTS ERROR:", err);
+
+      res.status(500).json({
+        success: false,
+        message: err.message,
+      });
+    }
+  }
+);
 console.log('✅ Medical Representative Routes Loaded Successfully');
 console.log('=====================================================\n');
 

@@ -3,7 +3,7 @@ const router = express.Router();
 const Doctor = require("../models/DoctorModel");
 const axios = require("axios");
 const jwt = require('jsonwebtoken')
-const SetDoctorAppointment = require("../models/doctorSetAppointment");
+const SetDoctorAppointment = require("../models/DoctorSetAppointment");
 const verifyDoctorsToken = require("../middlewares/verifyDoctorToken");
 
 

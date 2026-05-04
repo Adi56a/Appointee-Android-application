@@ -8,7 +8,7 @@ const multer = require("multer");
 const path = require("path");
 const Doctor = require("../models/DoctorModel");
 const verifyMrToken = require("../middlewares/verifyMrToken");
-const setDoctorAppointment = require("../models/doctorSetAppointment");
+const setDoctorAppointment = require("../models/DoctorSetAppointment");
 const BookAppointment = require("../models/BookAppointment");
 const getistDateStart = require("../utils/datehelper");
 
